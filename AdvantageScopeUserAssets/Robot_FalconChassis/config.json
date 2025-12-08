@@ -1,0 +1,40 @@
+{
+  "name": "Falcon Chassis",
+  "model": "model.glb",
+  "rotations": [
+    {
+      "axis": "x",
+      "degrees": 180
+    },
+    {
+      "axis": "z",
+      "degrees": 90
+    }
+  ],
+  "position": [
+    0,
+    0,
+    0
+  ],
+  "cameras": [
+    {
+      "name": "LL FC",
+      "fov": 75,
+      "resolution": [
+        1200,
+        800
+      ],
+      "rotations": [
+        {
+          "axis": "y",
+          "degrees": -20
+        }
+      ],
+      "position": [
+        0.327481,
+        0,
+        0.181211
+      ]
+    }
+  ]
+}
