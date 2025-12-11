@@ -9,7 +9,6 @@ package frc.robot.subsystems.vision;
 
 import edu.wpi.first.apriltag.AprilTagFieldLayout;
 import edu.wpi.first.apriltag.AprilTagFields;
-import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.Rotation3d;
 import edu.wpi.first.math.geometry.Transform3d;
 
@@ -23,22 +22,11 @@ public class VisionConstants {
   public static String camera1Name = "camera_1";
 
   // Robot to camera transforms
-  // (Configured on Limelight via withCameraOffset, PhotonVision via sim; keep base values for viz)
+  // (Not used by Limelight, configure in web UI instead)
   public static Transform3d robotToCamera0 =
       new Transform3d(0.327481, 0.0, 0.181211, new Rotation3d(0.0, -0.349, 0.0));
-  // Second camera transform (update to match your physical mount if used)
   public static Transform3d robotToCamera1 =
-      new Transform3d(0.0, 0.0, 0.181211, new Rotation3d(0.0, -0.349, Math.PI));
-
-  /** Convenience accessor for the configured robot-to-camera transform by index. */
-  public static Transform3d getRobotToCamera(int cameraIndex) {
-    return cameraIndex == 0 ? robotToCamera0 : robotToCamera1;
-  }
-
-  /** Pose form of {@link #getRobotToCamera(int)} for logging. */
-  public static Pose3d getRobotToCameraPose(int cameraIndex) {
-    return new Pose3d().transformBy(getRobotToCamera(cameraIndex));
-  }
+      new Transform3d(-0.2, 0.0, 0.2, new Rotation3d(0.0, -0.4, Math.PI));
 
   // Basic filtering thresholds
   public static double maxAmbiguity = 0.3;

@@ -10,206 +10,117 @@ package frc.robot.subsystems.vision;
 import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Rotation3d;
-import edu.wpi.first.math.geometry.Transform3d;
+import edu.wpi.first.math.util.Units;
+import edu.wpi.first.networktables.DoubleArrayPublisher;
+import edu.wpi.first.networktables.DoubleArraySubscriber;
 import edu.wpi.first.networktables.DoubleSubscriber;
+import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.wpilibj.RobotController;
-import edu.wpi.first.wpilibj.Timer;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
-import java.util.function.BiConsumer;
 import java.util.function.Supplier;
-import limelight.Limelight;
-import limelight.networktables.AngularVelocity3d;
-import limelight.networktables.LimelightPoseEstimator;
-import limelight.networktables.Orientation3d;
-import limelight.networktables.PoseEstimate;
-import limelight.results.RawFiducial;
 
 /** IO implementation for real Limelight hardware. */
 public class VisionIOLimelight implements VisionIO {
   private final Supplier<Rotation2d> rotationSupplier;
-  private final Limelight camera;
-  private final LimelightPoseEstimator estimatorMegatag1;
-  private final LimelightPoseEstimator estimatorMegatag2;
-  private final boolean enablePoseEstimation;
-  private final Supplier<Transform3d> robotToCameraSupplier;
-  // Freshness tracking (FPGA timeline) and last NT pose timestamp seen
-  private double lastDataFpgaTime = Double.NEGATIVE_INFINITY;
-  private double lastSeenNtPoseTimestamp = Double.NEGATIVE_INFINITY;
-  // Track last-used estimator timestamps to avoid duplicates per type
-  // Avoid resending identical pose samples per estimator type
-  private double lastUsedMegatag1Ts = Double.NEGATIVE_INFINITY;
-  private double lastUsedMegatag2Ts = Double.NEGATIVE_INFINITY;
-  // Heartbeat subscriber to mimic template resiliency (uses NT 'tl' latency as a frequently-updated
-  // entry)
-  private final DoubleSubscriber heartbeatLatencySub;
+  private final DoubleArrayPublisher orientationPublisher;
+
+  private final DoubleSubscriber latencySubscriber;
+  private final DoubleSubscriber txSubscriber;
+  private final DoubleSubscriber tySubscriber;
+  private final DoubleArraySubscriber megatag1Subscriber;
+  private final DoubleArraySubscriber megatag2Subscriber;
 
   /**
-   * Creates a new VisionIOLimelight with pose estimation enabled.
+   * Creates a new VisionIOLimelight.
    *
    * @param name The configured name of the Limelight.
    * @param rotationSupplier Supplier for the current estimated rotation, used for MegaTag 2.
    */
   public VisionIOLimelight(String name, Supplier<Rotation2d> rotationSupplier) {
-    this(name, rotationSupplier, true, null);
-  }
-
-  /**
-   * Creates a new VisionIOLimelight with pose estimation enabled and a dynamic camera transform.
-   *
-   * @param name The configured name of the Limelight.
-   * @param rotationSupplier Supplier for the current estimated rotation, used for MegaTag 2.
-   * @param robotToCameraSupplier Supplier for the robot-to-camera transform (for moving mounts).
-   */
-  public VisionIOLimelight(
-      String name,
-      Supplier<Rotation2d> rotationSupplier,
-      Supplier<Transform3d> robotToCameraSupplier) {
-    this(name, rotationSupplier, true, robotToCameraSupplier);
-  }
-
-  /**
-   * Creates a new VisionIOLimelight.
-   *
-   * @param name The configured name of the Limelight.
-   * @param rotationSupplier Supplier for the current estimated rotation, used for MegaTag 2.
-   * @param enablePoseEstimation If false, only tx/ty and tag IDs are populated (no pose samples).
-   */
-  public VisionIOLimelight(
-      String name, Supplier<Rotation2d> rotationSupplier, boolean enablePoseEstimation) {
-    this(name, rotationSupplier, enablePoseEstimation, null);
-  }
-
-  /**
-   * Creates a new VisionIOLimelight.
-   *
-   * @param name The configured name of the Limelight.
-   * @param rotationSupplier Supplier for the current estimated rotation, used for MegaTag 2.
-   * @param enablePoseEstimation If false, only tx/ty and tag IDs are populated (no pose samples).
-   * @param robotToCameraSupplier Supplier for the robot-to-camera transform (for moving mounts).
-   */
-  public VisionIOLimelight(
-      String name,
-      Supplier<Rotation2d> rotationSupplier,
-      boolean enablePoseEstimation,
-      Supplier<Transform3d> robotToCameraSupplier) {
+    var table = NetworkTableInstance.getDefault().getTable(name);
     this.rotationSupplier = rotationSupplier;
-    this.enablePoseEstimation = enablePoseEstimation;
-    this.robotToCameraSupplier = robotToCameraSupplier;
-    camera = new Limelight(name);
-    estimatorMegatag1 = camera.getPoseEstimator(false);
-    estimatorMegatag2 = camera.getPoseEstimator(true);
-    heartbeatLatencySub = camera.getNTTable().getDoubleTopic("tl").subscribe(0.0);
+    orientationPublisher = table.getDoubleArrayTopic("robot_orientation_set").publish();
+    latencySubscriber = table.getDoubleTopic("tl").subscribe(0.0);
+    txSubscriber = table.getDoubleTopic("tx").subscribe(0.0);
+    tySubscriber = table.getDoubleTopic("ty").subscribe(0.0);
+    megatag1Subscriber = table.getDoubleArrayTopic("botpose_wpiblue").subscribe(new double[] {});
+    megatag2Subscriber =
+        table.getDoubleArrayTopic("botpose_orb_wpiblue").subscribe(new double[] {});
   }
 
   @Override
   public void updateInputs(VisionIOInputs inputs) {
-    // Current FPGA time in seconds
-    double nowFpga = Timer.getFPGATimestamp();
-    // Update latest target observation
-    var data = camera.getData();
-    var targetData = data.targetData;
-    boolean hasTarget = targetData.getTargetStatus();
-    double txDeg = hasTarget ? targetData.getHorizontalOffset() : 0.0;
-    double tyDeg = hasTarget ? targetData.getVerticalOffset() : 0.0;
+    // Update connection status based on whether an update has been seen in the last 250ms
+    inputs.connected =
+        ((RobotController.getFPGATime() - latencySubscriber.getLastChange()) / 1000) < 250;
+
+    // Update target observation
     inputs.latestTargetObservation =
-        new TargetObservation(Rotation2d.fromDegrees(txDeg), Rotation2d.fromDegrees(tyDeg));
-    // Treat valid 2D target info as a fresh update for connectivity purposes
-    if (hasTarget) {
-      lastDataFpgaTime = Math.max(lastDataFpgaTime, nowFpga);
-    }
+        new TargetObservation(
+            Rotation2d.fromDegrees(txSubscriber.get()), Rotation2d.fromDegrees(tySubscriber.get()));
 
-    // Update orientation for MegaTag 2 using YALL settings API (only if estimating poses)
-    if (enablePoseEstimation) {
-      var yaw = rotationSupplier.get().getRadians();
-      var orientation =
-          new Orientation3d(
-              new Rotation3d(0.0, 0.0, yaw),
-              new AngularVelocity3d(
-                  edu.wpi.first.units.Units.RadiansPerSecond.of(0.0),
-                  edu.wpi.first.units.Units.RadiansPerSecond.of(0.0),
-                  edu.wpi.first.units.Units.RadiansPerSecond.of(0.0)));
-      var settings = camera.getSettings().withRobotOrientation(orientation);
-      if (robotToCameraSupplier != null) {
-        settings.withCameraOffset(new Pose3d().transformBy(robotToCameraSupplier.get()));
-      }
-      camera.flush();
-    }
+    // Update orientation for MegaTag 2
+    orientationPublisher.accept(
+        new double[] {rotationSupplier.get().getDegrees(), 0.0, 0.0, 0.0, 0.0, 0.0});
+    NetworkTableInstance.getDefault()
+        .flush(); // Increases network traffic but recommended by Limelight
 
-    // Read new observations
+    // Read new pose observations from NetworkTables
     Set<Integer> tagIds = new HashSet<>();
     List<PoseObservation> poseObservations = new LinkedList<>();
-
-    // Add tag IDs from raw fiducials (available even when not estimating)
-    RawFiducial[] fiducials = data.getRawFiducials();
-    if (fiducials != null) {
-      for (var f : fiducials) {
-        tagIds.add(f.id);
+    for (var rawSample : megatag1Subscriber.readQueue()) {
+      if (rawSample.value.length == 0) continue;
+      for (int i = 11; i < rawSample.value.length; i += 7) {
+        tagIds.add((int) rawSample.value[i]);
       }
+      poseObservations.add(
+          new PoseObservation(
+              // Timestamp, based on server timestamp of publish and latency
+              rawSample.timestamp * 1.0e-6 - rawSample.value[6] * 1.0e-3,
+
+              // 3D pose estimate
+              parsePose(rawSample.value),
+
+              // Ambiguity, using only the first tag because ambiguity isn't applicable for multitag
+              rawSample.value.length >= 18 ? rawSample.value[17] : 0.0,
+
+              // Tag count
+              (int) rawSample.value[7],
+
+              // Average tag distance
+              rawSample.value[9],
+
+              // Observation type
+              PoseObservationType.MEGATAG_1));
     }
+    for (var rawSample : megatag2Subscriber.readQueue()) {
+      if (rawSample.value.length == 0) continue;
+      for (int i = 11; i < rawSample.value.length; i += 7) {
+        tagIds.add((int) rawSample.value[i]);
+      }
+      poseObservations.add(
+          new PoseObservation(
+              // Timestamp, based on server timestamp of publish and latency
+              rawSample.timestamp * 1.0e-6 - rawSample.value[6] * 1.0e-3,
 
-    // Helper to convert a PoseEstimate into our PoseObservation and collect tag IDs
-    BiConsumer<PoseEstimate, PoseObservationType> addObservation =
-        (estimate, type) -> {
-          if (!estimate.hasData) return;
+              // 3D pose estimate
+              parsePose(rawSample.value),
 
-          // Skip stale/duplicate samples from the same estimator type
-          if (type == PoseObservationType.MEGATAG_1) {
-            if (estimate.timestampSeconds <= lastUsedMegatag1Ts) return;
-            lastUsedMegatag1Ts = estimate.timestampSeconds;
-          } else if (type == PoseObservationType.MEGATAG_2) {
-            if (estimate.timestampSeconds <= lastUsedMegatag2Ts) return;
-            lastUsedMegatag2Ts = estimate.timestampSeconds;
-          }
+              // Ambiguity, zeroed because the pose is already disambiguated
+              0.0,
 
-          // Collect tag IDs
-          if (estimate.rawFiducials != null) {
-            for (var fid : estimate.rawFiducials) {
-              tagIds.add(fid.id);
-            }
-          }
+              // Tag count
+              (int) rawSample.value[7],
 
-          // Build and add observation: template behavior (NT timestamp - latency)
-          double timestamp = estimate.timestampSeconds - estimate.latency;
-          Pose3d pose = estimate.pose;
-          int count = estimate.tagCount;
-          double avgDist = estimate.avgTagDist;
-          double ambiguity = 0.0;
-          if (type == PoseObservationType.MEGATAG_1) {
-            // Use average ambiguity for single-tag observations; 0 if multitag
-            ambiguity = (count == 1) ? estimate.getAvgTagAmbiguity() : 0.0;
-          } else {
-            // MEGATAG_2 is already disambiguated
-            ambiguity = 0.0;
-          }
-          poseObservations.add(
-              new PoseObservation(timestamp, pose, ambiguity, count, avgDist, type));
+              // Average tag distance
+              rawSample.value[9],
 
-          // Update freshness only when NT pose timestamp advances
-          if (estimate.timestampSeconds > lastSeenNtPoseTimestamp) {
-            lastSeenNtPoseTimestamp = estimate.timestampSeconds;
-            // Use receipt time for freshness check
-            lastDataFpgaTime = Math.max(lastDataFpgaTime, nowFpga);
-          }
-        };
-
-    if (enablePoseEstimation) {
-      estimatorMegatag1
-          .getPoseEstimate()
-          .ifPresent(pe -> addObservation.accept(pe, PoseObservationType.MEGATAG_1));
-      estimatorMegatag2
-          .getPoseEstimate()
-          .ifPresent(pe -> addObservation.accept(pe, PoseObservationType.MEGATAG_2));
+              // Observation type
+              PoseObservationType.MEGATAG_2));
     }
-
-    // Hybrid connection check: table present AND (fresh heartbeat OR fresh usable data)
-    boolean tableAvailable = Limelight.isAvailable(camera.limelightName);
-    boolean freshHeartbeat =
-        ((RobotController.getFPGATime() - heartbeatLatencySub.getLastChange()) / 1000.0) <= 250.0;
-    boolean freshData = (nowFpga - lastDataFpgaTime) <= 0.25;
-    inputs.connected = tableAvailable && (freshHeartbeat || freshData);
 
     // Save pose observations to inputs object
     inputs.poseObservations = new PoseObservation[poseObservations.size()];
@@ -223,5 +134,17 @@ public class VisionIOLimelight implements VisionIO {
     for (int id : tagIds) {
       inputs.tagIds[i++] = id;
     }
+  }
+
+  /** Parses the 3D pose from a Limelight botpose array. */
+  private static Pose3d parsePose(double[] rawLLArray) {
+    return new Pose3d(
+        rawLLArray[0],
+        rawLLArray[1],
+        rawLLArray[2],
+        new Rotation3d(
+            Units.degreesToRadians(rawLLArray[3]),
+            Units.degreesToRadians(rawLLArray[4]),
+            Units.degreesToRadians(rawLLArray[5])));
   }
 }
