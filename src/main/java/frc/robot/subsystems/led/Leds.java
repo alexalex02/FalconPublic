@@ -56,6 +56,9 @@ public class Leds extends SubsystemBase {
         }
       }
       case LARSON_RED -> {
+        if (effectChanged) {
+          io.setPattern(LedPattern.off());
+        }
         io.setLarsonRed(effect.brightness());
       }
       case BLINK -> updateBlink(effect, effectChanged);

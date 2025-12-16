@@ -23,6 +23,9 @@ public interface LedIO {
   /** Run a red Larson animation */
   public default void setLarsonRed(double brightness) {}
 
+  /** Stop any running animations so solid patterns fully apply. */
+  public default void clearAnimations() {}
+
   /** Simple RGB pattern container for the LED subsystem. */
   public static record LedPattern(int red, int green, int blue) {
     public LedPattern {

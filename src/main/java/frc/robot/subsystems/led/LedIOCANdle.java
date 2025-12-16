@@ -3,6 +3,7 @@ package frc.robot.subsystems.led;
 import static edu.wpi.first.units.Units.Volts;
 
 import com.ctre.phoenix6.configs.CANdleConfiguration;
+import com.ctre.phoenix6.controls.EmptyAnimation;
 import com.ctre.phoenix6.controls.LarsonAnimation;
 import com.ctre.phoenix6.controls.SolidColor;
 import com.ctre.phoenix6.hardware.CANdle;
@@ -17,12 +18,14 @@ import frc.robot.subsystems.led.LedIO.LedPattern;
 public class LedIOCANdle implements LedIO {
   private final CANdle candle;
   private final SolidColor solidColorRequest;
+  private final EmptyAnimation clearAnimationRequest;
   private final int ledCount = SubsystemConstants.LED_COUNT;
   private LedPattern lastPattern = LedPattern.off();
 
   public LedIOCANdle() {
     candle = new CANdle(SubsystemConstants.CANDLE_ID, SubsystemConstants.RIOCANBUS);
     solidColorRequest = new SolidColor(0, Math.max(0, SubsystemConstants.LED_COUNT - 1));
+    clearAnimationRequest = new EmptyAnimation(0);
 
     CANdleConfiguration config = new CANdleConfiguration();
     config.LED.StripType = StripTypeValue.GRB;
@@ -47,7 +50,9 @@ public class LedIOCANdle implements LedIO {
     if (pattern == null) {
       pattern = LedPattern.off();
     }
+    clearAnimations();
     lastPattern = pattern;
+    solidColorRequest.LEDStartIndex = 0;
     solidColorRequest.Color = new RGBWColor(pattern.red(), pattern.green(), pattern.blue());
     solidColorRequest.LEDEndIndex = Math.max(0, ledCount - 1);
     candle.setControl(solidColorRequest);
@@ -64,5 +69,10 @@ public class LedIOCANdle implements LedIO {
     anim.BounceMode = LarsonBounceValue.Front;
     anim.FrameRate = 20; // Hz
     candle.setControl(anim);
+  }
+
+  @Override
+  public void clearAnimations() {
+    candle.setControl(clearAnimationRequest);
   }
 }
